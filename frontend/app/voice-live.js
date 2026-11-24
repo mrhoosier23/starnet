@@ -65,6 +65,31 @@ const VoiceLive = (() => {
   let waveBars = null;
   let waveHistory = new Array(WAVE_BARS).fill(null).map(() => ({ v: 0, src: SELF }));
   let agentLevel = 0;
+  let speechHud = null, speechHudLoad = null, speechHudUnavailable = false;
+  function removeSpeechHud() {
+    speechHud?.dispose();
+    speechHud = null;
+    const host = $("lv-speech-hud");
+    if (host) host.hidden = true;
+  }
+  async function loadSpeechHud() {
+    const host = $("lv-speech-hud");
+    if (!host || speechHud || speechHudLoad || speechHudUnavailable || !active || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return;
+    const seq = sessionSeq;
+    try {
+      speechHudLoad = import("../assets/voice-particles/hud.js");
+      const { mountVoiceParticles } = await speechHudLoad;
+      if (!active || seq !== sessionSeq || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) return;
+      host.hidden = false;
+      speechHud = mountVoiceParticles(host);
+      speechHud.setLevel(agentLevel * AGENT_GAIN);
+    } catch (_) {
+      speechHudUnavailable = true;
+      host.hidden = true; // Local Live keeps its existing audio and level meter.
+    } finally {
+      speechHudLoad = null;
+    }
+  }
 
   function clampPanel(panel) {
     if (!panel || panel.hidden || !panel.style.left) return;
@@ -145,6 +170,7 @@ const VoiceLive = (() => {
       // The LEVEL IS THE CONTROL. There is no icon: an orb, a mic glyph, a lamp — anything sitting
       // beside the meter was a second thing to look at, and the meter already says everything this
       // module knows. So the button IS the meter: press anywhere on your own voice to cut in.
+      '<div id="lv-speech-hud" style="width:100%;height:120px" aria-hidden="true" hidden></div>',
       '<div class="lv-stage">',
         '<button id="lv-barge" class="lv-meter" type="button" aria-label="Interrupt and speak" title="Interrupt — speak now">',
           '<div id="lv-wave" class="lv-wave" aria-hidden="true"></div>',
@@ -179,6 +205,9 @@ const VoiceLive = (() => {
       wave.appendChild(col);
     }
     document.body.appendChild(panel);
+    window.matchMedia?.('(prefers-reduced-motion: reduce)')?.addEventListener?.('change', event => {
+      if (event.matches) removeSpeechHud();
+    });
     waveBars = Array.from(wave.children);
     restorePosition(panel);
     makeDraggable(panel);
@@ -223,6 +252,7 @@ const VoiceLive = (() => {
   function resetLevel() {
     waveHistory = new Array(WAVE_BARS).fill(null).map(() => ({ v: 0, src: SELF }));
     agentLevel = 0;
+    speechHud?.setLevel(0);
     tapLevel = 0;
     if (waveBars) waveBars.forEach(bar => { bar.textContent = RAMP[0]; bar.dataset.src = SELF; });
     const panel = $('live-voice-panel');
@@ -743,7 +773,12 @@ const VoiceLive = (() => {
     if (!active || !value || !Number.isFinite(value.audioStartMs)) return;
     lastAudioStartMs = Math.round(value.audioStartMs); markTiming(null);
   }
-  function onOutputLevel(rms) { agentLevel = Math.max(0, +rms || 0); }
+  function onOutputLevel(rms) {
+    agentLevel = Math.max(0, +rms || 0);
+    if (!active) return;
+    if (speechHud) speechHud.setLevel(agentLevel * AGENT_GAIN);
+    else if (agentLevel > 0) void loadSpeechHud();
+  }
   function onState(state) {
     if (!active || state === 'ended') return;
     setState(state === 'ready' ? 'listening' : state);
@@ -1850,6 +1885,7 @@ const VoiceLive = (() => {
   }
 
   function finish(cause) {
+    removeSpeechHud();
     if (ending) return;
     ending = true;
     active = false;
